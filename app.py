@@ -29,6 +29,13 @@ DISEASE_PROMPTS = {
     "Fracture": "Chest X-ray showing rib fracture or bone fracture",
     "Support Devices": "Chest X-ray showing support devices, tubes or lines",
 }
+INPUT_GUARDRAIL_PROMPTS = {
+    "Chest X-ray": "A diagnostic chest X-ray radiograph showing the thorax and lungs",
+    "Portrait Photo": "A portrait photograph of a person or celebrity",
+    "Animal Photo": "A natural photograph of an animal or pet",
+    "Document Screenshot": "A screenshot of a document, website, or computer interface",
+    "Natural Image": "A normal everyday color photograph of a scene or object",
+}
 SYNONYMS = {
     "Pleural Effusion": ["pleural fluid", "fluid around lung", "effusion"],
     "Cardiomegaly": ["enlarged heart", "cardiac enlargement"],
@@ -75,6 +82,17 @@ def _load_text_features() -> tuple[list[str], torch.Tensor]:
     return list(DISEASE_PROMPTS.keys()), text_features
 
 
+@st.cache_resource(show_spinner=False)
+def _load_guardrail_features() -> tuple[list[str], torch.Tensor]:
+    engine = _load_engine()
+    tokenizer = __import__("open_clip").get_tokenizer(MODEL_ID)
+    with torch.no_grad():
+        tokens = tokenizer(list(INPUT_GUARDRAIL_PROMPTS.values())).to(engine.device)
+        text_features = engine._model.encode_text(tokens)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    return list(INPUT_GUARDRAIL_PROMPTS.keys()), text_features
+
+
 def _pick_sample_image(data_dir: Path) -> Path | None:
     images_dir = data_dir / "images"
     if not images_dir.exists():
@@ -99,6 +117,22 @@ def _predict_diseases(image: Image.Image) -> dict[str, float]:
         for i in range(len(disease_names))
     }
     return dict(sorted(results.items(), key=lambda item: item[1], reverse=True))
+
+
+@torch.no_grad()
+def _validate_input_image(image: Image.Image) -> tuple[bool, dict[str, float]]:
+    engine = _load_engine()
+    labels, text_features = _load_guardrail_features()
+    tensor = engine._transform(image.convert("RGB")).unsqueeze(0).to(engine.device)
+    image_features = engine._model.encode_image(tensor)
+    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    similarities = (image_features @ text_features.T).squeeze(0)
+    probs = torch.softmax(similarities * 100, dim=0).detach().cpu().tolist()
+    scores = {labels[i]: round(float(probs[i]) * 100, 2) for i in range(len(labels))}
+    chest_score = scores["Chest X-ray"]
+    next_best = max(score for label, score in scores.items() if label != "Chest X-ray")
+    is_valid = chest_score >= 55 and chest_score > next_best
+    return is_valid, dict(sorted(scores.items(), key=lambda item: item[1], reverse=True))
 
 
 def _labels_match(disease: str, label_str: str) -> bool:
@@ -254,6 +288,14 @@ def main():
 
         if st.button("Submit", type="primary") or st.session_state.get("analysis_ready"):
             with st.spinner("Running retrieval, classification, and crosscheck..."):
+                is_valid_xray, input_scores = _validate_input_image(query_image)
+                if not is_valid_xray:
+                    st.error("This tool only supports chest X-ray images. Please upload a chest radiograph.")
+                    st.markdown("### Input Validation")
+                    for label, score in list(input_scores.items())[:3]:
+                        st.write(f"{label}: {score}%")
+                    st.session_state["analysis_ready"] = False
+                    return
                 similar_cases, disease_probs, diagnosis, assessment = _run_analysis(query_image, top_k)
 
             st.markdown(assessment)
