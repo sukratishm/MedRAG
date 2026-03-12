@@ -28,10 +28,10 @@ def _download(url: str, dest: Path) -> Path:
 
 def _extract(archive: Path, target_dir: Path) -> None:
     target_dir.mkdir(parents=True, exist_ok=True)
-    if archive.suffix == ".zip":
+    if zipfile.is_zipfile(archive):
         with zipfile.ZipFile(archive, "r") as zf:
             zf.extractall(target_dir)
-    elif archive.suffix in {".tgz", ".gz"} or archive.name.endswith(".tar.gz"):
+    elif tarfile.is_tarfile(archive) or archive.name.endswith((".tgz", ".tar.gz", ".gz")):
         with tarfile.open(archive, "r:*") as tf:
             tf.extractall(target_dir)
     else:
@@ -68,7 +68,7 @@ def main():
     if index_dir.exists() and any(index_dir.iterdir()):
         print(f"Index already present at {index_dir}")
     elif index_url:
-        archive = data_dir / "index_archive"
+        archive = data_dir / "index_archive.zip"
         archive = _download(index_url, archive)
         _extract(archive, index_dir)
         print(f"Index extracted to {index_dir}")
@@ -78,7 +78,7 @@ def main():
     if images_dir.exists() and any(images_dir.iterdir()):
         print(f"Images already present at {images_dir}")
     elif images_url:
-        archive = data_dir / "images_archive"
+        archive = data_dir / "images_archive.zip"
         archive = _download(images_url, archive)
         _extract(archive, images_dir)
         print(f"Images extracted to {images_dir}")
@@ -86,7 +86,7 @@ def main():
         print("GDRIVE_IMAGES_URL not set; images not downloaded.")
 
     # cleanup
-    for f in [data_dir / "index_archive", data_dir / "images_archive"]:
+    for f in [data_dir / "index_archive.zip", data_dir / "images_archive.zip"]:
         if f.exists():
             try:
                 if f.is_file():
