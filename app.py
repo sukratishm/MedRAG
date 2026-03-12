@@ -1,15 +1,43 @@
 import os
-import shutil
 import random
+import shutil
+from collections import Counter
 from pathlib import Path
 
 import streamlit as st
+import torch
 from PIL import Image
 
 from visual_search import VisualSearchEngine
 
 
-APP_TITLE = "MedRAG Visual Search"
+APP_TITLE = "Multimodal Medical RAG Diagnostic Assistant"
+MODEL_ID = "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+DISEASE_PROMPTS = {
+    "No Finding": "Chest X-ray with no abnormality, normal findings",
+    "Enlarged Cardiomediastinum": "Chest X-ray showing enlarged cardiomediastinum",
+    "Cardiomegaly": "Chest X-ray showing cardiomegaly, enlarged heart",
+    "Lung Opacity": "Chest X-ray showing lung opacity",
+    "Lung Lesion": "Chest X-ray showing lung lesion or mass",
+    "Edema": "Chest X-ray showing pulmonary edema, fluid in lungs",
+    "Consolidation": "Chest X-ray showing consolidation in lung",
+    "Pneumonia": "Chest X-ray showing pneumonia, lung infection",
+    "Atelectasis": "Chest X-ray showing atelectasis, collapsed lung",
+    "Pneumothorax": "Chest X-ray showing pneumothorax, air in pleural space",
+    "Pleural Effusion": "Chest X-ray showing pleural effusion, fluid around lung",
+    "Pleural Other": "Chest X-ray showing pleural abnormality",
+    "Fracture": "Chest X-ray showing rib fracture or bone fracture",
+    "Support Devices": "Chest X-ray showing support devices, tubes or lines",
+}
+SYNONYMS = {
+    "Pleural Effusion": ["pleural fluid", "fluid around lung", "effusion"],
+    "Cardiomegaly": ["enlarged heart", "cardiac enlargement"],
+    "Pneumonia": ["lung infection", "consolidation"],
+    "Edema": ["fluid in lungs", "pulmonary edema"],
+    "Atelectasis": ["collapsed lung", "lung collapse"],
+    "Lung Opacity": ["opacity", "haziness", "infiltrate"],
+    "No Finding": ["normal", "no abnormality", "clear"],
+}
 
 
 def _get_paths() -> tuple[Path, Path]:
@@ -27,15 +55,25 @@ def _ensure_index_available() -> Path:
         index_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(repo_index, index_dir)
         return index_dir
-    raise FileNotFoundError(
-        "FAISS index not found. Expected at DATA_DIR/index or ./index"
-    )
+    raise FileNotFoundError("FAISS index not found. Expected at DATA_DIR/index or ./index")
 
 
 @st.cache_resource(show_spinner=True)
 def _load_engine() -> VisualSearchEngine:
     index_dir = _ensure_index_available()
     return VisualSearchEngine(index_dir=index_dir, device="auto", top_k=5)
+
+
+@st.cache_resource(show_spinner=False)
+def _load_text_features() -> tuple[list[str], torch.Tensor]:
+    engine = _load_engine()
+    tokenizer = __import__("open_clip").get_tokenizer(MODEL_ID)
+    with torch.no_grad():
+        tokens = tokenizer(list(DISEASE_PROMPTS.values())).to(engine.device)
+        text_features = engine._model.encode_text(tokens)
+        text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    return list(DISEASE_PROMPTS.keys()), text_features
+
 
 def _pick_sample_image(data_dir: Path) -> Path | None:
     images_dir = data_dir / "images"
@@ -47,29 +85,127 @@ def _pick_sample_image(data_dir: Path) -> Path | None:
     return random.choice(candidates)
 
 
-def _render_results(results):
-    for r in results:
+@torch.no_grad()
+def _predict_diseases(image: Image.Image) -> dict[str, float]:
+    engine = _load_engine()
+    disease_names, text_features = _load_text_features()
+    tensor = engine._transform(image.convert("RGB")).unsqueeze(0).to(engine.device)
+    image_features = engine._model.encode_image(tensor)
+    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    similarities = (image_features @ text_features.T).squeeze(0)
+    probs = torch.softmax(similarities * 100, dim=0).detach().cpu().tolist()
+    results = {
+        disease_names[i]: round(float(probs[i]) * 100, 2)
+        for i in range(len(disease_names))
+    }
+    return dict(sorted(results.items(), key=lambda item: item[1], reverse=True))
+
+
+def _labels_match(disease: str, label_str: str) -> bool:
+    label_lower = label_str.lower()
+    if disease.lower() in label_lower:
+        return True
+    return any(syn.lower() in label_lower for syn in SYNONYMS.get(disease, []))
+
+
+def _crosscheck(similar_cases, disease_probs: dict[str, float]) -> list[dict]:
+    top_diseases = list(disease_probs.keys())[:5]
+    diagnosis = []
+    total_cases = max(len(similar_cases), 1)
+
+    for disease in top_diseases:
+        llm_prob = disease_probs[disease]
+        matching_cases = sum(1 for case in similar_cases if _labels_match(disease, case.labels))
+        gallery_support = matching_cases / total_cases
+        confidence = (llm_prob / 100 * 0.5) + (gallery_support * 0.5)
+        if gallery_support >= 0.6 and llm_prob >= 20:
+            status = "HIGH"
+        elif gallery_support >= 0.3 or llm_prob >= 15:
+            status = "MEDIUM"
+        else:
+            status = "LOW"
+        diagnosis.append({
+            "disease": disease,
+            "llm_probability": llm_prob,
+            "matching_cases": matching_cases,
+            "total_cases": total_cases,
+            "gallery_support": f"{matching_cases}/{total_cases} cases",
+            "confidence": round(confidence * 100, 1),
+            "status": status,
+        })
+    return sorted(diagnosis, key=lambda item: item["confidence"], reverse=True)
+
+
+def _positive_labels(label_str: str) -> list[str]:
+    positives = []
+    for part in label_str.split(" | "):
+        if ": Positive" in part:
+            positives.append(part.split(":")[0])
+    return positives
+
+
+def _generate_assessment(diagnosis: list[dict], similar_cases) -> str:
+    primary = diagnosis[0]
+    top_positive_labels = Counter()
+    for case in similar_cases:
+        top_positive_labels.update(_positive_labels(case.labels))
+
+    supporting_findings = ", ".join(label for label, _ in top_positive_labels.most_common(3)) or "no repeated positive findings"
+    differential = ", ".join(item["disease"] for item in diagnosis[1:4])
+
+    return f"""
+## Primary Clinical Impression
+
+Based on visual similarity retrieval and zero-shot disease classification, the leading impression is **{primary["disease"]}** with a combined confidence of **{primary["confidence"]}%**.
+
+## Evidence Summary
+
+- The classifier estimated **{primary["llm_probability"]}%** probability for {primary["disease"]}.
+- The retrieval engine found **{primary["gallery_support"]}** similar cases supporting this diagnosis.
+- The most repeated positive findings among retrieved cases were: **{supporting_findings}**.
+
+## Differential Diagnosis
+
+Alternative conditions to consider are **{differential}**. These remain relevant because visually similar cases include overlapping thoracic findings common across chest X-ray pathology.
+
+## Clinical Note
+
+This is a retrieval-supported decision aid, not a definitive medical diagnosis. Final interpretation should be confirmed by a radiologist or clinician.
+""".strip()
+
+
+def _run_analysis(image: Image.Image, top_k: int):
+    engine = _load_engine()
+    similar_cases = engine.search(image, top_k=top_k, load_images=False)
+    disease_probs = _predict_diseases(image)
+    diagnosis = _crosscheck(similar_cases, disease_probs)
+    assessment = _generate_assessment(diagnosis, similar_cases)
+    return similar_cases, disease_probs, diagnosis, assessment
+
+
+def _render_similar_cases(similar_cases):
+    st.markdown("### Similar Historical Cases")
+    for idx, case in enumerate(similar_cases, start=1):
         cols = st.columns([1, 3])
         with cols[0]:
-            if r.filepath and Path(r.filepath).exists():
+            if case.filepath and Path(case.filepath).exists():
                 try:
-                    img = Image.open(r.filepath).convert("RGB")
-                    st.image(img, use_column_width=True)
+                    st.image(Image.open(case.filepath).convert("RGB"), use_container_width=True)
                 except Exception:
-                    st.caption("Image preview unavailable")
-            else:
-                st.caption("Image file not present")
+                    st.caption("Preview unavailable")
         with cols[1]:
-            st.markdown(f"**Rank {r.rank}**")
-            st.write(f"Similarity: {r.similarity:.3f}")
-            st.write(f"Filename: {r.filename}")
-            st.write(f"Labels: {r.labels}")
+            st.markdown(f"**#{idx} {case.filename}**")
+            st.write(f"Similarity: {case.similarity:.3f}")
+            positives = _positive_labels(case.labels)
+            st.write(f"Confirmed findings: {', '.join(positives) if positives else 'None'}")
 
 
 def main():
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.title(APP_TITLE)
-    st.caption("Upload a chest X-ray to retrieve similar cases.")
+    st.caption(
+        "Upload a chest X-ray. The system retrieves similar historical cases and generates a retrieval-supported differential diagnosis."
+    )
 
     with st.sidebar:
         st.markdown("**Index Status**")
@@ -77,42 +213,61 @@ def main():
             index_dir = _ensure_index_available()
             st.write(f"Index dir: `{index_dir}`")
             data_dir = index_dir.parent
-        except FileNotFoundError as e:
-            st.error(str(e))
+        except FileNotFoundError as exc:
+            st.error(str(exc))
             return
 
-        st.markdown("**Settings**")
-        top_k = st.slider("Top K", min_value=1, max_value=10, value=5, step=1)
-        sample_clicked = st.button("Use Sample Image")
-        sample_path = _pick_sample_image(data_dir) if sample_clicked else None
-        st.caption("First search can take 20-60 seconds on Render free tier.")
+        top_k = st.slider("Retrieved Cases", min_value=3, max_value=20, value=5, step=1)
+        if st.button("Use Sample Image"):
+            st.session_state["sample_path"] = str(_pick_sample_image(data_dir) or "")
+        if st.button("Clear"):
+            st.session_state.pop("sample_path", None)
+            st.session_state.pop("analysis_ready", None)
+            st.rerun()
+        st.caption("First analysis can still be slow on Render free tier.")
 
-    uploaded = st.file_uploader("Upload X-ray image", type=["png", "jpg", "jpeg"])
-    if not uploaded and not sample_path:
-        st.info("Upload an image or click “Use Sample Image”.")
-        return
+    uploaded = st.file_uploader("Upload Patient Chest X-Ray", type=["png", "jpg", "jpeg"])
+    sample_path = st.session_state.get("sample_path")
 
-    try:
-        if sample_path:
-            query_img = Image.open(sample_path).convert("RGB")
+    query_image = None
+    if uploaded is not None:
+        query_image = Image.open(uploaded).convert("RGB")
+        st.session_state["analysis_ready"] = True
+    elif sample_path:
+        query_image = Image.open(sample_path).convert("RGB")
+        st.session_state["analysis_ready"] = True
+
+    left, right = st.columns([1.05, 1.25])
+
+    with left:
+        st.markdown("### Input X-Ray")
+        if query_image is not None:
+            st.image(query_image, use_container_width=True)
         else:
-            query_img = Image.open(uploaded).convert("RGB")
-    except Exception as e:
-        st.error(f"Could not read image: {e}")
-        return
+            st.info("Upload an image or use the sample button.")
 
-    st.subheader("Query Image")
-    st.image(query_img, use_column_width=True)
+    with right:
+        st.markdown("### Generated Clinical Assessment")
+        if query_image is None:
+            st.info("Run an analysis to generate the assessment.")
+            return
 
-    with st.spinner("Loading model and searching..."):
-        engine = _load_engine()
-        results = engine.search(query_img, top_k=top_k, load_images=False)
+        if st.button("Submit", type="primary") or st.session_state.get("analysis_ready"):
+            with st.spinner("Running retrieval, classification, and crosscheck..."):
+                similar_cases, disease_probs, diagnosis, assessment = _run_analysis(query_image, top_k)
 
-    st.subheader("Similar Cases")
-    if not results:
-        st.warning("No results found.")
-        return
-    _render_results(results)
+            st.markdown(assessment)
+            st.markdown("### Ranked Diagnoses")
+            for item in diagnosis:
+                st.write(
+                    f"**{item['disease']}** | classifier {item['llm_probability']}% | "
+                    f"gallery {item['gallery_support']} | confidence {item['confidence']}% [{item['status']}]"
+                )
+            st.markdown("### Top Disease Probabilities")
+            for disease, prob in list(disease_probs.items())[:5]:
+                st.write(f"{disease}: {prob}%")
+            _render_similar_cases(similar_cases)
+            st.session_state["analysis_ready"] = False
 
 
 if __name__ == "__main__":
