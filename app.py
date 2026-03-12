@@ -1,5 +1,6 @@
 import os
 import shutil
+import random
 from pathlib import Path
 
 import streamlit as st
@@ -36,6 +37,15 @@ def _load_engine() -> VisualSearchEngine:
     index_dir = _ensure_index_available()
     return VisualSearchEngine(index_dir=index_dir, device="auto", top_k=5)
 
+def _pick_sample_image(data_dir: Path) -> Path | None:
+    images_dir = data_dir / "images"
+    if not images_dir.exists():
+        return None
+    candidates = list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")) + list(images_dir.glob("*.jpeg"))
+    if not candidates:
+        return None
+    return random.choice(candidates)
+
 
 def _render_results(results):
     for r in results:
@@ -66,20 +76,26 @@ def main():
         try:
             index_dir = _ensure_index_available()
             st.write(f"Index dir: `{index_dir}`")
+            data_dir = index_dir.parent
         except FileNotFoundError as e:
             st.error(str(e))
             return
 
         st.markdown("**Settings**")
         top_k = st.slider("Top K", min_value=1, max_value=10, value=5, step=1)
+        sample_clicked = st.button("Use Sample Image")
+        sample_path = _pick_sample_image(data_dir) if sample_clicked else None
 
     uploaded = st.file_uploader("Upload X-ray image", type=["png", "jpg", "jpeg"])
-    if not uploaded:
-        st.info("Upload an image to run retrieval.")
+    if not uploaded and not sample_path:
+        st.info("Upload an image or click “Use Sample Image”.")
         return
 
     try:
-        query_img = Image.open(uploaded).convert("RGB")
+        if sample_path:
+            query_img = Image.open(sample_path).convert("RGB")
+        else:
+            query_img = Image.open(uploaded).convert("RGB")
     except Exception as e:
         st.error(f"Could not read image: {e}")
         return
