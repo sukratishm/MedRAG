@@ -8,244 +8,109 @@ app_port: 7860
 pinned: false
 ---
 
-# 🏥 Medical X-ray Gallery Builder
-### Component 1 of 3 — Visual Database + Search Engine
+# MedRAG
 
-```
-Deliverable Files
-─────────────────────────────────────────────────
-index/
-  visual_db.index    ← FAISS binary (the "gallery")
-  metadata.json      ← id → {filename, filepath, labels}
-  embeddings.npy     ← raw (N, 512) float32 array
+MedRAG is a multimodal chest X-ray retrieval and diagnostic-assistance app built on:
+- BiomedCLIP for image embeddings and zero-shot disease scoring
+- FAISS for similar-case retrieval
+- a crosscheck layer that combines classifier output with retrieved case evidence
+- Streamlit for the application UI
 
-Python Modules
-─────────────────────────────────────────────────
-data_downloader.py   ← Step 1: get X-ray images
-gallery_builder.py   ← Step 2: build visual_db.index
-visual_search.py     ← Step 3: search function (imported by app)
-test_visual_search.py
-```
+The current app supports:
+- chest X-ray upload
+- sample-image testing
+- similar-case retrieval from the indexed gallery
+- zero-shot disease probability ranking
+- retrieval-supported clinical assessment text
+- Hugging Face Spaces deployment through Docker
 
----
+## Current App Flow
 
-## Architecture
+1. The user uploads a chest X-ray or selects a sample image.
+2. The app encodes the image with BiomedCLIP.
+3. FAISS retrieves the most visually similar historical cases.
+4. BiomedCLIP scores 14 CheXpert disease prompts.
+5. A crosscheck step combines retrieval agreement with classifier confidence.
+6. The app renders:
+   - generated clinical assessment
+   - ranked diagnoses
+   - top disease probabilities
+   - similar historical cases
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    GALLERY BUILDER                       │
-│                                                          │
-│  X-ray images (PNG/JPG)                                  │
-│       │                                                  │
-│       ▼                                                  │
-│  BiomedCLIP Vision Encoder                               │
-│  microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224│
-│  (trained on 15M biomedical image-text pairs)            │
-│       │                                                  │
-│       ▼  512-dim L2-normalized embedding                 │
-│  FAISS IndexFlatIP  (cosine similarity)                  │
-│       │                                                  │
-│       ▼                                                  │
-│  visual_db.index  +  metadata.json                       │
-└─────────────────────────────────────────────────────────┘
+## Project Files
 
-┌─────────────────────────────────────────────────────────┐
-│                    VISUAL SEARCH                         │
-│                                                          │
-│  Query X-ray                                             │
-│       │                                                  │
-│       ▼  BiomedCLIP encode                               │
-│  512-dim query vector                                    │
-│       │                                                  │
-│       ▼  FAISS.search(query, k=5)                        │
-│  Top-5 similar cases                                     │
-│       │                                                  │
-│       ▼                                                  │
-│  List[SearchResult]                                      │
-│    rank, filename, filepath, labels, similarity          │
-└─────────────────────────────────────────────────────────┘
-```
+Core app:
+- `app.py` - Streamlit UI and diagnosis pipeline
+- `visual_search.py` - FAISS-backed visual search engine
+- `download_assets.py` - downloads demo index/images and prefetches BiomedCLIP
 
----
+Index/data tooling:
+- `gallery_builder.py` - build FAISS index from chest X-ray images
+- `data_downloader.py` - download source datasets
+- `rewrite_metadata.py` - rewrite metadata filepaths for deployment
 
-## Quick Start
+Research/demo:
+- `MedRAG.ipynb` - notebook containing the retrieval, zero-shot classification, and crosscheck logic that the app was ported from
+
+Deployment:
+- `Dockerfile` - Hugging Face Spaces container build
+- `start.sh` - startup entrypoint for Spaces
+- `requirements-space.txt` - CPU-friendly dependencies for Spaces
+- `render.yaml` - older Render deployment config
 
 ## Hugging Face Spaces
 
 This repo is configured for a Docker Space.
 
+### Deploy steps
+
 1. Create a new Hugging Face Space.
-2. Choose `Docker` as the SDK.
-3. Push this repo to the Space.
-4. Wait for the build to finish.
+2. Choose `Docker`.
+3. Push this repo to the Space remote.
+4. Let the Space build and start.
 
-The Space will:
-- install CPU-only PyTorch
-- download the public `index.zip` and `images.zip`
-- prefetch the BiomedCLIP model
-- start the Streamlit app on port `7860`
+The Space startup does the following:
+- installs CPU-only PyTorch
+- downloads the public `index.zip` and `images.zip`
+- prefetches the BiomedCLIP model
+- starts Streamlit on port `7860`
 
-### 1. Install dependencies
+## Local Run
 
-```bash
-pip install -r requirements.txt
-```
-
-For GPU acceleration (10x faster build):
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install faiss-gpu
-```
-
-### 2. Get X-ray images
-
-**Option A — Open-I (recommended, no login, ~900 MB, 7,470 images)**
-```bash
-python data_downloader.py --source openi --output_dir ./data
-```
-
-**Option B — NIH ChestX-ray14 sample (~1.1 GB, 5,000 images)**
-```bash
-python data_downloader.py --source nih_sample --output_dir ./data
-```
-
-**Option C — Your own local images**
-```bash
-python data_downloader.py --source local --local_dir /path/to/xrays --output_dir ./data
-```
-
-### 3. Build the gallery index
+Install dependencies:
 
 ```bash
-python gallery_builder.py \
-    --image_dir  ./data/openi_images \
-    --output_dir ./index \
-    --batch_size 32 \
-    --device     cpu
+pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+pip install -r requirements-space.txt
 ```
 
-Expected time:
-- CPU  (no GPU): ~1,000 img/min → 7K images ≈ 7 minutes
-- GPU  (T4):     ~8,000 img/min → 7K images ≈ 1 minute
-
-Expected output:
-```
-index/
-  visual_db.index    ~30 MB for 7K images
-  metadata.json      ~2 MB
-  embeddings.npy     ~14 MB
-  build_stats.json
-```
-
-### 4. Test the search
+Run the app:
 
 ```bash
-python visual_search.py ./data/openi_images/some_xray.png --index_dir ./index --top_k 5
+python download_assets.py
+streamlit run app.py
 ```
 
-```
-🔍 Query: ./data/openi_images/CXR100_IM-0008-1001.png
-============================================================
-  #1  0.954  ████████████████████████████
-       CXR99_IM-0007-1001.png
-       Labels: Cardiomegaly
+## Data Notes
 
-  #2  0.931  ███████████████████████████
-       CXR101_IM-0009-2001.png
-       Labels: No Finding
+The deployed demo uses a reduced subset of CheXpert so it can run on free CPU infrastructure.
 
-  ...
-```
+Assets are pulled from public Google Drive links by default:
+- FAISS index archive
+- subset image archive
 
-### 5. Use in your web app / RAG pipeline
+If needed, override them with:
+- `GDRIVE_INDEX_URL`
+- `GDRIVE_IMAGES_URL`
 
-```python
-from visual_search import VisualSearchEngine
+Optional environment variables:
+- `DATA_DIR`
+- `HF_HOME`
+- `PREFETCH_MODEL`
 
-# Load once at app startup
-engine = VisualSearchEngine(index_dir="./index", device="auto", top_k=5)
+## Limitations
 
-# Call for each uploaded X-ray
-results = engine.search("uploaded_xray.png", load_images=True)
-
-for r in results:
-    print(f"#{r.rank}  sim={r.similarity:.3f}  {r.labels}")
-    print(f"     {r.filepath}")
-```
-
-### 6. Run tests
-
-```bash
-# Unit tests (no model download needed)
-pytest test_visual_search.py -v -m "not integration"
-
-# Integration tests (requires built index)
-pytest test_visual_search.py -v -m integration --index_dir ./index
-```
-
----
-
-## Why BiomedCLIP?
-
-| Model | CheXpert AUC | Training Data | Fine-tune needed? |
-|-------|-------------|---------------|-------------------|
-| CLIP (ViT-B/32) | 0.71 | General images | Yes |
-| **BiomedCLIP** | **0.87** | **15M biomedical pairs** | **No** |
-| CheXNet | 0.84 | CheXpert only | Dataset-specific |
-
-BiomedCLIP's embedding space inherently clusters similar pathologies together — 
-pneumonia images cluster near other pneumonia cases without any task-specific training.
-
----
-
-## Scaling Guide
-
-| Gallery Size | Index Type | Build Time (GPU) | Search Time |
-|-------------|------------|-----------------|-------------|
-| < 10K       | FlatIP     | < 2 min         | < 5 ms      |
-| 10K – 500K  | IVFFlat    | 5–20 min        | < 20 ms     |
-| > 500K      | IVFPQ      | 30+ min         | < 50 ms     |
-
-The builder auto-selects FlatIP vs IVFFlat based on gallery size.
-
----
-
-## File Descriptions
-
-| File | Purpose |
-|------|---------|
-| `data_downloader.py` | Downloads Open-I or NIH dataset, builds metadata CSV |
-| `gallery_builder.py` | Encodes images → FAISS index + metadata.json |
-| `visual_search.py` | `VisualSearchEngine` class used by web app |
-| `test_visual_search.py` | Unit + integration tests |
-| `requirements.txt` | Python dependencies |
-| `index/visual_db.index` | FAISS binary — the gallery database |
-| `index/metadata.json` | Maps FAISS ID → filename + labels |
-| `index/embeddings.npy` | Raw embeddings backup |
-
----
-
-## Integration with RAG Pipeline (Component 2)
-
-```python
-# In your RAG system:
-from visual_search import VisualSearchEngine
-
-engine = VisualSearchEngine("./index")
-
-def get_similar_cases(query_image_path: str, k: int = 5):
-    """
-    Returns top-K similar cases for RAG context.
-    Feed these into your LLM prompt as evidence.
-    """
-    results = engine.search(query_image_path, top_k=k)
-    return [
-        {
-            "case_id":    r.idx,
-            "similarity": r.similarity,
-            "diagnosis":  r.labels,
-            "image_path": r.filepath,
-        }
-        for r in results
-    ]
-```
+- The app is a diagnostic aid, not a clinical decision system.
+- Free-tier hosting will have slow cold starts.
+- The generated assessment is rule-based synthesis from model scores and retrieval support, not a physician-grade interpretation.
+- The original project plan referenced a larger multi-agent/LLM flow; the current deployed app implements the retrieval + classifier + crosscheck path from the notebook.
