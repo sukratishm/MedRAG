@@ -42,8 +42,21 @@ def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+def _pick_data_dir() -> Path:
+    env_dir = os.getenv("DATA_DIR")
+    if env_dir:
+        return Path(env_dir).resolve()
+    for candidate in (Path("/var/data"), Path("/tmp/medrag_data")):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            return candidate
+        except Exception:
+            continue
+    return Path("/tmp/medrag_data").resolve()
+
+
 def main():
-    data_dir = Path(os.getenv("DATA_DIR", "/var/data")).resolve()
+    data_dir = _pick_data_dir()
     index_dir = data_dir / "index"
     images_dir = data_dir / "images"
 

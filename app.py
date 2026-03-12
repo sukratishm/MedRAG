@@ -13,7 +13,7 @@ APP_TITLE = "MedRAG Visual Search"
 
 def _get_paths() -> tuple[Path, Path]:
     repo_index = Path("index").resolve()
-    data_dir = Path(os.getenv("DATA_DIR", "/var/data")).resolve()
+    data_dir = Path(os.getenv("DATA_DIR", "/tmp/medrag_data")).resolve()
     index_dir = Path(os.getenv("INDEX_DIR", data_dir / "index")).resolve()
     return repo_index, index_dir
 
