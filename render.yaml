@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: medrag-app
+    env: python
+    plan: standard
+    buildCommand: pip install -r requirements.txt
+    startCommand: python download_assets.py && streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    disk:
+      name: medrag-data
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: DATA_DIR
+        value: /var/data
+      - key: GDRIVE_INDEX_URL
+        value: ""
+      - key: GDRIVE_IMAGES_URL
+        value: ""
