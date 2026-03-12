@@ -20,6 +20,8 @@ from huggingface_hub import snapshot_download
 
 
 BIOMEDCLIP_REPO = "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+DEFAULT_INDEX_URL = "https://drive.google.com/uc?id=1NwEac0s_qah8L27RO-aFIz2PRfvXC9j0"
+DEFAULT_IMAGES_URL = "https://drive.google.com/uc?id=1LAMNffnw3kFHZXvY9ySR62VxlaChRXyv"
 
 
 def _download(url: str, dest: Path) -> Path:
@@ -75,8 +77,8 @@ def main():
     index_dir = data_dir / "index"
     images_dir = data_dir / "images"
 
-    index_url = os.getenv("GDRIVE_INDEX_URL", "")
-    images_url = os.getenv("GDRIVE_IMAGES_URL", "")
+    index_url = os.getenv("GDRIVE_INDEX_URL", DEFAULT_INDEX_URL)
+    images_url = os.getenv("GDRIVE_IMAGES_URL", DEFAULT_IMAGES_URL)
 
     _ensure_dir(data_dir)
 

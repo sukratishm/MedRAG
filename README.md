@@ -1,3 +1,13 @@
+---
+title: MedRAG Diagnostic Assistant
+emoji: 🩺
+colorFrom: blue
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # 🏥 Medical X-ray Gallery Builder
 ### Component 1 of 3 — Visual Database + Search Engine
 
@@ -59,6 +69,21 @@ test_visual_search.py
 ---
 
 ## Quick Start
+
+## Hugging Face Spaces
+
+This repo is configured for a Docker Space.
+
+1. Create a new Hugging Face Space.
+2. Choose `Docker` as the SDK.
+3. Push this repo to the Space.
+4. Wait for the build to finish.
+
+The Space will:
+- install CPU-only PyTorch
+- download the public `index.zip` and `images.zip`
+- prefetch the BiomedCLIP model
+- start the Streamlit app on port `7860`
 
 ### 1. Install dependencies
 

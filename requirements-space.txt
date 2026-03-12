@@ -1,0 +1,10 @@
+open-clip-torch>=2.24.0
+faiss-cpu>=1.7.4
+Pillow>=10.0.0
+numpy>=1.24.0
+tqdm>=4.66.0
+requests>=2.31.0
+pandas>=2.0.0
+streamlit>=1.31.0
+gdown>=5.1.0
+huggingface-hub>=0.28.0
