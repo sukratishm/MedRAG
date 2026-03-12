@@ -28,7 +28,7 @@ def _ensure_index_available() -> Path:
         shutil.copytree(repo_index, index_dir)
         return index_dir
     raise FileNotFoundError(
-        "FAISS index not found. Expected at /var/data/index or ./index"
+        "FAISS index not found. Expected at DATA_DIR/index or ./index"
     )
 
 
@@ -85,6 +85,7 @@ def main():
         top_k = st.slider("Top K", min_value=1, max_value=10, value=5, step=1)
         sample_clicked = st.button("Use Sample Image")
         sample_path = _pick_sample_image(data_dir) if sample_clicked else None
+        st.caption("First search can take 20-60 seconds on Render free tier.")
 
     uploaded = st.file_uploader("Upload X-ray image", type=["png", "jpg", "jpeg"])
     if not uploaded and not sample_path:

@@ -16,6 +16,10 @@ import zipfile
 from pathlib import Path
 
 import gdown
+from huggingface_hub import snapshot_download
+
+
+BIOMEDCLIP_REPO = "microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
 
 
 def _download(url: str, dest: Path) -> Path:
@@ -53,6 +57,17 @@ def _pick_data_dir() -> Path:
         except Exception:
             continue
     return Path("/tmp/medrag_data").resolve()
+
+
+def _prefetch_biomedclip() -> None:
+    cache_dir = Path(os.getenv("HF_HOME", "/tmp/hf_cache")).resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_download(
+        repo_id=BIOMEDCLIP_REPO,
+        cache_dir=str(cache_dir),
+        local_dir_use_symlinks=False,
+    )
+    print(f"BiomedCLIP cached in {cache_dir}")
 
 
 def main():
@@ -95,6 +110,9 @@ def main():
                     shutil.rmtree(f)
             except Exception:
                 pass
+
+    if os.getenv("PREFETCH_MODEL", "1") == "1":
+        _prefetch_biomedclip()
 
 
 if __name__ == "__main__":
