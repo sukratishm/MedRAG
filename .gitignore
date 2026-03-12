@@ -10,6 +10,9 @@ __pycache__/
 data/
 index/
 *.zip
+embeddings_heatmap.png
+embeddings_pca.png
+embeddings_raw.png
 
 # Large datasets
 chexpert_full/
